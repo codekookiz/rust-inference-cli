@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Word_Embedding",
+    "type": "Dense",
+    "weight": 1.02498197555542
+  },
+  {
+    "name": "Sentiment_Score",
+    "type": "Dense",
+    "weight": 1.0249090194702148
+  },
+  {
+    "name": "Positive_Probability",
+    "type": "Sigmoid"
+  }
+]
