@@ -1,0 +1,5 @@
+[
+  { "type": "Dense", "name": "Linear_1", "factor": 2.0 },
+  { "type": "ReLU", "name": "ReLU_1" },
+  { "type": "Dense", "name": "Linear_2", "factor": 0.1 }
+]
