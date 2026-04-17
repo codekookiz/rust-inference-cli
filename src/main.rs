@@ -19,25 +19,65 @@ fn load_sentiment_map(path: &str) -> HashMap<String, f32> {
 fn normalize_input(v: Vec<f32>) -> Vec<f32> {
     if v.len() == 3 {
         let mut normalized = v;
-        normalized[0] = (normalized[0] + 1.0).ln() / 4.0; 
-        normalized[0] = normalized[0].clamp(0.0, 1.0);
+        normalized[0] = ((normalized[0] + 1.0).ln() / 5.0).clamp(0.0, 1.0);
 
         normalized[1] = (normalized[1] / 100.0).clamp(0.0, 1.0);
-        normalized[2] = (normalized[2] / 10.0).clamp(0.0, 1.0);
+        normalized[2] = (normalized[2] / 20.0).clamp(0.0, 1.0);
         normalized
     } else {
         v
     }
 }
 
-fn text_to_vector(text: &str, map: &HashMap<String, f32>) -> Vec<f32> {
-    let mut score = 0.0;
-    for word in text.split_whitespace() {
-        if let Some(&s) = map.get(word) {
-            score += s;
+fn stem_korean(word: &str) -> String {
+    let mut stemmed = word.to_string();
+    
+    let endings = ["은", "는", "이", "가", "을", "를", "으로", "로", "에서", "보다", "부터", "까지"];
+    for &end in &endings {
+        if stemmed.ends_with(end) && stemmed.chars().count() > end.chars().count() {
+            stemmed = stemmed[..stemmed.len() - end.len()].to_string();
+            break; 
         }
     }
-    vec![score]
+
+    let verb_endings = ["다", "요", "네", "어", "아", "니", "게", "해"];
+    for &end in &verb_endings {
+        if stemmed.ends_with(end) && stemmed.chars().count() > 1 {
+            stemmed = stemmed[..stemmed.len() - end.len()].to_string();
+            break;
+        }
+    }
+
+    stemmed
+}
+
+fn text_to_vector(text: &str, map: &HashMap<String, f32>) -> Vec<f32> {
+    let mut total_score = 0.0;
+    let mut last_score = 0.0;
+    let multiplier = 1.5;
+
+    for word in text.split_whitespace() {
+        let stemmed = stem_korean(word);
+        
+        let score = map.get(word)
+            .or_else(|| map.get(&stemmed));
+
+        if let Some(&current_score) = score {
+            if last_score != 0.0 && current_score != 0.0 {
+                if (last_score > 0.0 && current_score > 0.0) || (last_score < 0.0 && current_score < 0.0) {
+                    total_score += current_score * multiplier;
+                } else {
+                    total_score += current_score;
+                }
+            } else {
+                total_score += current_score;
+            }
+            last_score = current_score;
+        } else {
+            last_score = 0.0;
+        }
+    }
+    vec![total_score]
 }
 
 fn load_model_from_path(path: &str) -> Vec<Box<dyn Layer>> {
@@ -111,7 +151,7 @@ fn main() {
     let (in_tx, in_rx) = mpsc::channel::<(Vec<f32>, f32, bool)>();
     let (out_tx, out_rx) = mpsc::channel::<(Vec<f32>, f32, f32, bool)>();
     let shared_in_rx = Arc::new(Mutex::new(in_rx));
-    let learning_rate = 0.1;
+    let learning_rate = 0.01;
 
     let input_hint = if model_path.contains("exam") {
         "공부(0+),성적(0~100),컨디션(1~10)"
@@ -200,9 +240,11 @@ fn main() {
     });
 
     if !is_predict_only {
-        for (v, t) in prepped_data {
-            in_tx.send((v, t, false)).unwrap();
+        for _ in 0..1000 {
+        for (v, t) in &prepped_data {
+            in_tx.send((v.clone(), *t, false)).unwrap();
         }
+    }
     } else {
         println!("[모드] 예측 전용 모드 활성화.");
         print!("입력({}) > ", input_hint);
