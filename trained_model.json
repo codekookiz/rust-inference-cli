@@ -1,0 +1,20 @@
+[
+  {
+    "name": "L1",
+    "type": "Dense",
+    "weight": 1.5304372310638428
+  },
+  {
+    "name": "R1",
+    "type": "ReLU"
+  },
+  {
+    "name": "L2",
+    "type": "Dense",
+    "weight": 0.5850915312767029
+  },
+  {
+    "name": "S1",
+    "type": "Sigmoid"
+  }
+]
