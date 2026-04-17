@@ -16,6 +16,20 @@ fn load_sentiment_map(path: &str) -> HashMap<String, f32> {
     }
 }
 
+fn normalize_input(v: Vec<f32>) -> Vec<f32> {
+    if v.len() == 3 {
+        let mut normalized = v;
+        normalized[0] = (normalized[0] + 1.0).ln() / 4.0; 
+        normalized[0] = normalized[0].clamp(0.0, 1.0);
+
+        normalized[1] = (normalized[1] / 100.0).clamp(0.0, 1.0);
+        normalized[2] = (normalized[2] / 10.0).clamp(0.0, 1.0);
+        normalized
+    } else {
+        v
+    }
+}
+
 fn text_to_vector(text: &str, map: &HashMap<String, f32>) -> Vec<f32> {
     let mut score = 0.0;
     for word in text.split_whitespace() {
@@ -83,10 +97,12 @@ fn interpret_result(model_path: &str, input: &[f32], output: f32, loss: f32, is_
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (model_path, save_path) = if let Some(p) = args.get(1) {
-        (p.clone(), format!("trained_{}", p))
+    
+    let (model_path, save_path, is_predict_only) = if let Some(p) = args.get(1) {
+        let is_only = args.iter().any(|arg| arg == "--predict");
+        (p.clone(), format!("trained_{}", p), is_only)
     } else {
-        ("exam_init.json".to_string(), "trained_exam.json".to_string())
+        ("exam_init.json".to_string(), "trained_exam.json".to_string(), false)
     };
 
     let model = Arc::new(load_model_from_path(&model_path));
@@ -97,20 +113,33 @@ fn main() {
     let shared_in_rx = Arc::new(Mutex::new(in_rx));
     let learning_rate = 0.1;
 
+    let input_hint = if model_path.contains("exam") {
+        "공부(0+),성적(0~100),컨디션(1~10)"
+    } else if model_path.contains("sentiment") {
+        "감정 문장 또는 수치"
+    } else {
+        "v1,v2,v3..."
+    };
+
     let mut prepped_data = Vec::new();
-    if let Some(data_path) = args.get(2) {
-        if let Ok(content) = std::fs::read_to_string(data_path) {
-            let parts: Vec<&str> = content.split(';').filter(|s| !s.trim().is_empty()).collect();
-            for part in parts {
-                let pair: Vec<&str> = part.split(':').collect();
-                if pair.len() == 2 {
-                    let v = if model_path.contains("sentiment") && !pair[0].contains(',') && pair[0].trim().parse::<f32>().is_err() {
-                        text_to_vector(pair[0].trim(), &sentiment_map)
-                    } else {
-                        pair[0].split(',').map(|s| s.trim().parse::<f32>().unwrap_or(0.0)).collect()
-                    };
-                    let t = pair[1].trim().parse::<f32>().unwrap_or(0.0);
-                    prepped_data.push((v, t));
+    if !is_predict_only {
+        if let Some(data_path) = args.get(2) {
+            if let Ok(content) = std::fs::read_to_string(data_path) {
+                let parts: Vec<&str> = content.split(';').filter(|s| !s.trim().is_empty()).collect();
+                for part in parts {
+                    let pair: Vec<&str> = part.split(':').collect();
+                    if pair.len() == 2 {
+                        let mut v = if model_path.contains("sentiment") && !pair[0].contains(',') && pair[0].trim().parse::<f32>().is_err() {
+                            text_to_vector(pair[0].trim(), &sentiment_map)
+                        } else {
+                            pair[0].split(',').map(|s| s.trim().parse::<f32>().unwrap_or(0.0)).collect()
+                        };
+                        
+                        if model_path.contains("exam") { v = normalize_input(v); }
+                        
+                        let t = pair[1].trim().parse::<f32>().unwrap_or(0.0);
+                        prepped_data.push((v, t));
+                    }
                 }
             }
         }
@@ -156,21 +185,28 @@ fn main() {
     }
 
     let model_path_for_thread = model_path.clone();
+    let hint_for_thread = input_hint.to_string();
     thread::spawn(move || {
         let mut count = 0;
         for (input_vec, res, loss, is_pred) in out_rx {
             count += 1;
-            if is_pred || count % 10 == 0 || count == total_expected {
+            if is_pred || count % 10 == 0 || (total_expected > 0 && count == total_expected) {
                 interpret_result(&model_path_for_thread, &input_vec, res, loss, is_pred);
                 if !is_pred { println!("[진행] {}/{}개 처리 중...", count, total_expected); }
-                print!("\n입력(문장 또는 v1,v2...:target) > ");
+                print!("\n입력({}) > ", hint_for_thread);
                 stdout().flush().unwrap();
             }
         }
     });
 
-    for (v, t) in prepped_data {
-        in_tx.send((v, t, false)).unwrap();
+    if !is_predict_only {
+        for (v, t) in prepped_data {
+            in_tx.send((v, t, false)).unwrap();
+        }
+    } else {
+        println!("[모드] 예측 전용 모드 활성화.");
+        print!("입력({}) > ", input_hint);
+        stdout().flush().unwrap();
     }
 
     loop {
@@ -195,14 +231,18 @@ fn main() {
                 (pair[0], 0.0, true)
             };
 
-            let v: Vec<f32> = vec_str.split(',')
+            let mut v: Vec<f32> = vec_str.split(',')
                 .map(|s| s.trim().parse::<f32>().unwrap_or(0.0))
                 .collect();
+            
+            if model_path.contains("exam") { v = normalize_input(v); }
             
             if !v.is_empty() { in_tx.send((v, target, is_pred)).unwrap(); }
         }
     }
 
     drop(in_tx);
-    save_model(&save_path, &model);
+    if !is_predict_only {
+        save_model(&save_path, &model);
+    }
 }
