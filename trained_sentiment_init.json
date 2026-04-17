@@ -1,13 +1,19 @@
 [
   {
+    "bias": 0.030935009941458702,
     "name": "Word_Embedding",
     "type": "Dense",
-    "weight": 1.02498197555542
+    "weights": [
+      0.9976671934127808
+    ]
   },
   {
+    "bias": 0.030861055478453636,
     "name": "Sentiment_Score",
     "type": "Dense",
-    "weight": 1.0249090194702148
+    "weights": [
+      0.9980276226997375
+    ]
   },
   {
     "name": "Positive_Probability",

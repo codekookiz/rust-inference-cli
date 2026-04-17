@@ -1,5 +1,15 @@
 [
-  { "type": "Dense", "name": "Word_Embedding", "weight": 1.0 },
-  { "type": "Dense", "name": "Sentiment_Score", "weight": 1.0 },
+  { 
+    "type": "Dense", 
+    "name": "Word_Embedding", 
+    "weights": [1.0], 
+    "bias": 0.0 
+  },
+  { 
+    "type": "Dense", 
+    "name": "Sentiment_Score", 
+    "weights": [1.0], 
+    "bias": 0.0 
+  },
   { "type": "Sigmoid", "name": "Positive_Probability" }
 ]

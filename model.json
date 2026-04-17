@@ -1,6 +1,16 @@
 [
-  { "type": "Dense", "name": "L1", "weight": 1.5 },
+  { 
+    "type": "Dense", 
+    "name": "L1", 
+    "weights": [1.5], 
+    "bias": 0.0 
+  },
   { "type": "ReLU", "name": "R1" },
-  { "type": "Dense", "name": "L2", "weight": 0.5 },
+  { 
+    "type": "Dense", 
+    "name": "L2", 
+    "weights": [0.5], 
+    "bias": 0.0 
+  },
   { "type": "Sigmoid", "name": "S1" }
 ]

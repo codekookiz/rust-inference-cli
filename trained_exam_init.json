@@ -1,20 +1,20 @@
 [
   {
-    "name": "L1",
+    "bias": 0.05401233211159706,
+    "name": "Exam_Input_Layer",
     "type": "Dense",
-    "weight": 1.1032243967056274
+    "weights": [
+      0.7241013646125793,
+      0.14471420645713806,
+      0.0816369578242302
+    ]
   },
   {
     "name": "R1",
     "type": "ReLU"
   },
   {
-    "name": "L2",
-    "type": "Dense",
-    "weight": 0.6837905049324036
-  },
-  {
-    "name": "S1",
+    "name": "Output",
     "type": "Sigmoid"
   }
 ]

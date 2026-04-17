@@ -2,18 +2,38 @@ mod layers;
 
 use layers::{Layer, Dense, ReLU, Sigmoid};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::path::Path;
+use std::io::{Write, stdin, stdout};
+
+fn load_sentiment_map(path: &str) -> HashMap<String, f32> {
+    if let Ok(data) = std::fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+fn text_to_vector(text: &str, map: &HashMap<String, f32>) -> Vec<f32> {
+    let mut score = 0.0;
+    for word in text.split_whitespace() {
+        if let Some(&s) = map.get(word) {
+            score += s;
+        }
+    }
+    vec![score]
+}
 
 fn load_model_from_path(path: &str) -> Vec<Box<dyn Layer>> {
-    let data = std::fs::read_to_string(path).expect("모델 파일을 읽을 수 없습니다.");
-    let json: Value = serde_json::from_str(&data).expect("JSON 파싱에 실패했습니다.");
+    let data = std::fs::read_to_string(path).expect("File error");
+    let json: Value = serde_json::from_str(&data).expect("JSON error");
     let mut layers: Vec<Box<dyn Layer>> = Vec::new();
 
     if let Some(arr) = json.as_array() {
         for item in arr {
-            let layer_type = item["type"].as_str().expect("type 필드가 없습니다.");
+            let layer_type = item["type"].as_str().expect("No type");
             match layer_type {
                 "Dense" => {
                     let d: Dense = serde_json::from_value(item.clone()).unwrap();
@@ -27,7 +47,7 @@ fn load_model_from_path(path: &str) -> Vec<Box<dyn Layer>> {
                     let s: Sigmoid = serde_json::from_value(item.clone()).unwrap();
                     layers.push(Box::new(s));
                 }
-                _ => println!("경고: 알 수 없는 레이어 타입 '{}'", layer_type),
+                _ => {}
             }
         }
     }
@@ -36,26 +56,24 @@ fn load_model_from_path(path: &str) -> Vec<Box<dyn Layer>> {
 
 fn save_model(path: &str, model: &[Box<dyn Layer>]) {
     let json_list: Vec<Value> = model.iter().map(|l| l.to_json()).collect();
-    let json_string = serde_json::to_string_pretty(&json_list).expect("직렬화 실패");
-    std::fs::write(path, json_string).expect("파일 쓰기 실패");
-    println!("\n모델이 '{}'에 저장되었습니다!", path);
+    let json_string = serde_json::to_string_pretty(&json_list).unwrap();
+    std::fs::write(path, json_string).unwrap();
+    println!("\n[시스템] 모델 저장 완료: {}", path);
 }
 
-fn interpret_result(model_path: &str, input: f32, output: f32, loss: f32, is_prediction: bool) {
+fn interpret_result(model_path: &str, input: &[f32], output: f32, loss: f32, is_prediction: bool) {
     let filename = Path::new(model_path).file_name().unwrap().to_str().unwrap();
     println!("\n--- 분석 결과 ({}) ---", filename);
 
     if filename.contains("exam") {
-        let chance = (output * 100.0) as i32;
-        println!("공부 시간: {:.1}", input);
-        println!("합격 확률: {}%", chance);
-        if chance > 70 { println!("상태: 합격권"); }
-        else { println!("상태: 노력 필요"); }
+        println!("입력 데이터 (공부, 성적, 컨디션): {:?}", input);
+        println!("합격 확률: {:.1}%", output * 100.0);
     } else if filename.contains("sentiment") {
-        println!("문장 점수: {:.2}", input);
-        if output > 0.65 { println!("감정: 긍정"); }
-        else if output < 0.35 { println!("감정: 부정"); }
-        else { println!("감정: 중립"); }
+        println!("입력 벡터: {:?}", input);
+        print!("분석 결과: ");
+        if output > 0.65 { println!("긍정 (확률: {:.1}%)", output * 100.0); }
+        else if output < 0.35 { println!("부정 (확률: {:.1}%)", (1.0 - output) * 100.0); }
+        else { println!("중립 ({:.1}%)", output * 100.0); }
     }
     
     if !is_prediction {
@@ -65,39 +83,48 @@ fn interpret_result(model_path: &str, input: f32, output: f32, loss: f32, is_pre
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let default_init_path = "init_model.json";
-
     let (model_path, save_path) = if let Some(p) = args.get(1) {
-        let path_str = p.as_str();
-        (path_str.to_string(), format!("trained_{}", path_str))
+        (p.clone(), format!("trained_{}", p))
     } else {
-        let trained_default = "trained_model.json";
-        if Path::new(trained_default).exists() {
-            (trained_default.to_string(), trained_default.to_string())
-        } else {
-            (default_init_path.to_string(), "trained_model.json".to_string())
-        }
+        ("exam_init.json".to_string(), "trained_exam.json".to_string())
     };
 
-    let model_list = load_model_from_path(&model_path);
-    let model = Arc::new(model_list);
+    let model = Arc::new(load_model_from_path(&model_path));
+    let sentiment_map = load_sentiment_map("sentiment_map.json");
     
-    println!("모델 로드 완료: {}", model_path);
-    println!("저장 예정 경로: {}", save_path);
-
-    let (in_tx, in_rx) = mpsc::channel::<(f32, f32, bool)>();
-    let (out_tx, out_rx) = mpsc::channel::<(usize, f32, f32, f32, bool)>();
+    let (in_tx, in_rx) = mpsc::channel::<(Vec<f32>, f32, bool)>();
+    let (out_tx, out_rx) = mpsc::channel::<(Vec<f32>, f32, f32, bool)>();
     let shared_in_rx = Arc::new(Mutex::new(in_rx));
     let learning_rate = 0.1;
 
-    for worker_id in 0..3 {
+    let mut prepped_data = Vec::new();
+    if let Some(data_path) = args.get(2) {
+        if let Ok(content) = std::fs::read_to_string(data_path) {
+            let parts: Vec<&str> = content.split(';').filter(|s| !s.trim().is_empty()).collect();
+            for part in parts {
+                let pair: Vec<&str> = part.split(':').collect();
+                if pair.len() == 2 {
+                    let v = if model_path.contains("sentiment") && !pair[0].contains(',') && pair[0].trim().parse::<f32>().is_err() {
+                        text_to_vector(pair[0].trim(), &sentiment_map)
+                    } else {
+                        pair[0].split(',').map(|s| s.trim().parse::<f32>().unwrap_or(0.0)).collect()
+                    };
+                    let t = pair[1].trim().parse::<f32>().unwrap_or(0.0);
+                    prepped_data.push((v, t));
+                }
+            }
+        }
+    }
+    let total_expected = prepped_data.len();
+
+    for _ in 0..3 {
         let model_ref = Arc::clone(&model);
         let rx_ref = Arc::clone(&shared_in_rx);
         let tx_res = out_tx.clone();
 
         thread::spawn(move || {
             loop {
-                let (input_val, target_val, is_pred) = {
+                let (input_vec, target_val, is_pred) = {
                     let lock = rx_ref.lock().unwrap();
                     match lock.recv() {
                         Ok(v) => v,
@@ -105,79 +132,74 @@ fn main() {
                     }
                 };
 
-                let mut current_input = input_val;
+                let mut current_input = input_vec.clone();
                 let mut layer_inputs = vec![];
 
                 for layer in model_ref.iter() {
-                    layer_inputs.push(current_input);
+                    layer_inputs.push(current_input.clone());
                     current_input = layer.forward(current_input);
                 }
 
-                let final_output = current_input;
+                let final_output = current_input[0];
                 let gradient = final_output - target_val;
                 let loss = gradient.powi(2) * 0.5;
 
                 if !is_pred {
-                    let mut grad = gradient;
-                    for (layer, &prev_input) in model_ref.iter().rev().zip(layer_inputs.iter().rev()) {
+                    let mut grad = vec![gradient];
+                    for (layer, prev_input) in model_ref.iter().rev().zip(layer_inputs.into_iter().rev()) {
                         grad = layer.backward(prev_input, grad, learning_rate);
                     }
                 }
-
-                tx_res.send((worker_id, input_val, final_output, loss, is_pred)).unwrap();
+                tx_res.send((input_vec, final_output, loss, is_pred)).unwrap();
             }
         });
     }
 
     let model_path_for_thread = model_path.clone();
     thread::spawn(move || {
-        for (_id, input, res, loss, is_pred) in out_rx {
-            interpret_result(&model_path_for_thread, input, res, loss, is_pred);
-            print!("\n입력(값:정답, 값, 종료:q, 저장:s) > ");
-            use std::io::Write;
-            std::io::stdout().flush().unwrap();
+        let mut count = 0;
+        for (input_vec, res, loss, is_pred) in out_rx {
+            count += 1;
+            if is_pred || count % 10 == 0 || count == total_expected {
+                interpret_result(&model_path_for_thread, &input_vec, res, loss, is_pred);
+                if !is_pred { println!("[진행] {}/{}개 처리 중...", count, total_expected); }
+                print!("\n입력(문장 또는 v1,v2...:target) > ");
+                stdout().flush().unwrap();
+            }
         }
     });
 
-    if let Some(data_path) = args.get(2) {
-        if let Ok(content) = std::fs::read_to_string(data_path) {
-            for part in content.split(',') {
-                let pair: Vec<&str> = part.split(':').collect();
-                if pair.len() == 2 {
-                    if let (Ok(v), Ok(t)) = (pair[0].trim().parse::<f32>(), pair[1].trim().parse::<f32>()) {
-                        in_tx.send((v, t, false)).unwrap();
-                    }
-                }
-            }
-        }
+    for (v, t) in prepped_data {
+        in_tx.send((v, t, false)).unwrap();
     }
 
     loop {
-        print!("입력 > ");
-        use std::io::{stdin, stdout, Write};
-        stdout().flush().unwrap();
+        let mut input_str = String::new();
+        stdin().read_line(&mut input_str).unwrap();
+        let trimmed = input_str.trim();
 
-        let mut input = String::new();
-        stdin().read_line(&mut input).expect("Failed to read");
-        let input = input.trim();
+        if trimmed == "q" { break; }
+        if trimmed == "s" { save_model(&save_path, &model); continue; }
 
-        if input == "q" { break; }
-        if input == "s" {
-            save_model(&save_path, &model);
+        if model_path.contains("sentiment") && !trimmed.contains(':') && !trimmed.contains(',') {
+            let v = text_to_vector(trimmed, &sentiment_map);
+            in_tx.send((v, 0.0, true)).unwrap();
             continue;
         }
 
-        for part in input.split(',') {
+        for part in trimmed.split(';') {
             let pair: Vec<&str> = part.split(':').collect();
-            if pair.len() == 2 {
-                if let (Ok(v), Ok(t)) = (pair[0].trim().parse::<f32>(), pair[1].trim().parse::<f32>()) {
-                    in_tx.send((v, t, false)).unwrap();
-                }
-            } else if pair.len() == 1 {
-                if let Ok(v) = pair[0].trim().parse::<f32>() {
-                    in_tx.send((v, 0.0, true)).unwrap();
-                }
-            }
+            let (vec_str, target, is_pred) = if pair.len() == 2 {
+                (pair[0], pair[1].parse::<f32>().unwrap_or(0.0), false)
+            } else {
+                (pair[0], 0.0, true)
+            };
+
+            let v: Vec<f32> = vec_str.split(',')
+                .map(|s| s.trim().parse::<f32>().unwrap_or(0.0))
+                .collect();
+            
+            if !v.is_empty() { in_tx.send((v, target, is_pred)).unwrap(); }
         }
     }
 
